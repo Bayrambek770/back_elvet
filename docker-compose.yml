@@ -1,0 +1,55 @@
+version: "3.9"
+services:
+  web:
+    build: .
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - redis
+    restart: unless-stopped
+
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-back_elvet}
+      POSTGRES_USER: ${POSTGRES_USER:-back_elvet}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-back_elvet}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+
+  celeryworker:
+    build: .
+    env_file: .env
+    command: ["bash", "-lc", "celery -A config worker -l info"]
+    depends_on:
+      - db
+      - redis
+    restart: unless-stopped
+
+  celerybeat:
+    build: .
+    env_file: .env
+    command: ["bash", "-lc", "celery -A config beat -l info"]
+    depends_on:
+      - db
+      - redis
+    restart: unless-stopped
+
+  bot:
+    build: .
+    env_file: .env
+    command: ["bash", "-lc", "python manage.py run_bot"]
+    depends_on:
+      - db
+      - redis
+    restart: unless-stopped
+
+volumes:
+  pgdata: {}

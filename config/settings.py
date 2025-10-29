@@ -11,9 +11,12 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 from pathlib import Path
+import os
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / '.env')
 
 
 # Quick-start development settings - unsuitable for production
@@ -25,7 +28,7 @@ SECRET_KEY = 'django-insecure-cj=vlyr@#co&h)vj4evsqow+5jbv8v@5-i$=7sks(ul2cjt=er
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -37,10 +40,24 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    # Third-party apps
+    'rest_framework',
+    'drf_spectacular',
+    'drf_spectacular_sidecar',
+    'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist',
+    'django_celery_beat',
+    # Local apps
+    'users',
+    'clinic',
+    'authentication',
+    'support_requests',
+    'telegram_bot',
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'clinic.middleware.DailyNurseSalaryResetMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -104,7 +121,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Tashkent'
 
 USE_I18N = True
 
@@ -120,3 +137,82 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Custom user model
+AUTH_USER_MODEL = 'users.User'
+
+# Django REST Framework
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.AllowAny',
+    ],
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+    ],
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+}
+
+# SimpleJWT configuration
+from datetime import timedelta
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': False,
+    'BLACKLIST_AFTER_ROTATION': True,
+    'UPDATE_LAST_LOGIN': True,
+    # For production, consider setting these explicitly; defaults are secure
+    # 'ALGORITHM': 'HS256',
+    # 'SIGNING_KEY': SECRET_KEY,
+    # 'AUTH_HEADER_TYPES': ('Bearer',),
+}
+
+# drf-spectacular (OpenAPI/Swagger) settings
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'Back Elvet API',
+    'DESCRIPTION': 'Veterinary clinic management API with JWT auth, requests and clinic modules.',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    # Allow public access to docs; adjust in production as needed
+    'SERVE_PERMISSIONS': ['rest_framework.permissions.AllowAny'],
+    # Split request/response components in schema to improve clients
+    'COMPONENT_SPLIT_REQUEST': True,
+}
+
+# Celery configuration
+CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/1')
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+
+# Periodic tasks (use Celery Beat). You can also manage schedules via django-celery-beat Admin.
+from celery.schedules import crontab
+
+CELERY_BEAT_SCHEDULE = {
+    # Release rooms automatically when their release_date passes
+    'release-due-rooms-every-5-mins': {
+        'task': 'clinic.tasks.release_due_rooms',
+        'schedule': 300.0,  # every 5 minutes
+    },
+    # Reset nurse daily salary at local midnight
+    'reset-nurse-daily-salary-midnight': {
+        'task': 'clinic.tasks.reset_daily_nurse_salary',
+        'schedule': crontab(minute=0, hour=0),
+    },
+    # Send revisit reminders at 08:00 local time daily
+    'send-revisit-reminders-0800': {
+        'task': 'clinic.tasks.send_revisit_reminders',
+        'schedule': crontab(minute=0, hour=8),
+    },
+}
+
+# Telegram bot configuration
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+TELEGRAM_MODE = os.getenv('TELEGRAM_MODE', 'polling')  # 'polling' or 'webhook'
+TELEGRAM_WEBHOOK_URL = os.getenv('TELEGRAM_WEBHOOK_URL')
+TELEGRAM_LOGIN_URL_BASE = os.getenv('TELEGRAM_LOGIN_URL_BASE', 'https://example.com/login')
