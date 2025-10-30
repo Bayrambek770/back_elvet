@@ -22,13 +22,12 @@ load_dotenv(BASE_DIR / '.env')
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-cj=vlyr@#co&h)vj4evsqow+5jbv8v@5-i$=7sks(ul2cjt=er'
-
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
-
-ALLOWED_HOSTS = ['*']
+# SECURITY
+# Prefer environment variables for production
+SECRET_KEY = os.getenv('SECRET_KEY', 'dev-insecure-key-change-me')
+DEBUG = os.getenv('DEBUG', 'True').lower() in {'1', 'true', 'yes'}
+ALLOWED_HOSTS = [h for h in os.getenv('ALLOWED_HOSTS', '*').split(',') if h]
+CSRF_TRUSTED_ORIGINS = [o for o in os.getenv('CSRF_TRUSTED_ORIGINS', '').split(',') if o]
 
 
 # Application definition
@@ -96,6 +95,16 @@ DATABASES = {
     }
 }
 
+# Use DATABASE_URL if provided (e.g., postgres://user:pass@db:5432/dbname)
+DATABASE_URL = os.getenv('DATABASE_URL')
+if DATABASE_URL:
+    try:
+        import dj_database_url  # type: ignore
+        DATABASES['default'] = dj_database_url.parse(DATABASE_URL, conn_max_age=600)
+    except Exception:
+        # Fallback to sqlite if parsing fails
+        pass
+
 
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
@@ -132,6 +141,12 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = str(BASE_DIR / 'staticfiles')
+STATICFILES_DIRS: list[str] = []
+
+# Media files
+MEDIA_URL = 'media/'
+MEDIA_ROOT = str(BASE_DIR / 'media')
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -183,8 +198,8 @@ SPECTACULAR_SETTINGS = {
 }
 
 # Celery configuration
-CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
-CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/1')
+CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/0')
+CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://redis:6379/1')
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
@@ -216,3 +231,23 @@ TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_MODE = os.getenv('TELEGRAM_MODE', 'polling')  # 'polling' or 'webhook'
 TELEGRAM_WEBHOOK_URL = os.getenv('TELEGRAM_WEBHOOK_URL')
 TELEGRAM_LOGIN_URL_BASE = os.getenv('TELEGRAM_LOGIN_URL_BASE', 'https://example.com/login')
+
+# WhiteNoise for static files in production and optional HTTPS security
+if not DEBUG:
+    MIDDLEWARE.insert(1, 'whitenoise.middleware.WhiteNoiseMiddleware')
+    STORAGES = {
+        'staticfiles': {
+            'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+        }
+    }
+    USE_HTTPS = os.getenv('USE_HTTPS', 'false').lower() in {'1', 'true', 'yes'}
+    SECURE_SSL_REDIRECT = USE_HTTPS
+    SESSION_COOKIE_SECURE = USE_HTTPS
+    CSRF_COOKIE_SECURE = USE_HTTPS
+    if USE_HTTPS:
+        SECURE_HSTS_SECONDS = int(os.getenv('SECURE_HSTS_SECONDS', '31536000'))
+        SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+        SECURE_HSTS_PRELOAD = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    SECURE_BROWSER_XSS_FILTER = True
+    X_FRAME_OPTIONS = 'DENY'

@@ -1,6 +1,24 @@
 # back_elvet
 Veterinary clinic management API with JWT auth, DRF, Celery, and Telegram Bot integration.
 
+## Local access and ports
+
+When running with Docker Compose, the web service listens on `0.0.0.0:8000` inside the container and the host publishes port `8000` on all interfaces. This is expected. To access the app from your machine, use:
+
+- http://localhost:8000
+- or http://127.0.0.1:8000
+
+Avoid using `http://0.0.0.0:8000` in your browser — `0.0.0.0` is a non-routable meta-address and Django will reject it unless explicitly added to `ALLOWED_HOSTS`.
+
+For local development, ensure your `.env` has:
+
+```
+ALLOWED_HOSTS=localhost,127.0.0.1
+CSRF_TRUSTED_ORIGINS=http://localhost:8000
+```
+
+For production, set your actual domain(s) and use HTTPS in `CSRF_TRUSTED_ORIGINS`.
+
 ## Telegram Bot
 
 The `telegram_bot` app provides client onboarding and admin announcements using aiogram 3.x.

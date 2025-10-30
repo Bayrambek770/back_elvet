@@ -1,4 +1,4 @@
-Django==5.2.7
+Django==5.1.4
 djangorestframework==3.15.2
 drf-spectacular==0.27.2
 drf-spectacular-sidecar==2024.7.1
@@ -9,7 +9,7 @@ dj-database-url==2.2.0
 psycopg2-binary==2.9.9
 celery==5.3.6
 redis==5.0.7
-django-celery-beat==2.6.0
+django-celery-beat==2.7.0
 aiogram==3.6.0
 aiohttp==3.9.5
 whitenoise==6.7.0

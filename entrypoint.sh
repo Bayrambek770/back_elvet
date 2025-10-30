@@ -29,8 +29,13 @@ PY
   fi
 fi
 
+# Collect static and migrate DB
 python manage.py collectstatic --noinput
 python manage.py migrate --noinput
 
-# Start gunicorn
-exec gunicorn -c gunicorn.conf.py config.wsgi:application
+# If a command is provided, run it (for celery worker/beat/bot). Otherwise start gunicorn.
+if [ "$#" -gt 0 ]; then
+  exec "$@"
+else
+  exec gunicorn -c gunicorn.conf.py config.wsgi:application
+fi
