@@ -1,5 +1,5 @@
 # Dockerfile for back_elvet Django app
-FROM python:3.13-slim
+FROM python:3.12.3-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -8,13 +8,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     netcat-openbsd \
+    build-essential \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Install dependencies first (leverage Docker cache)
 COPY requirements.prod.txt /app/
-RUN pip install --upgrade pip && pip install -r requirements.prod.txt
+# Upgrade pip tooling first; ensure we can build wheels if necessary (psycopg2)
+RUN pip install --upgrade pip setuptools wheel && pip install -r requirements.txt
 
 # Copy project
 COPY . /app
