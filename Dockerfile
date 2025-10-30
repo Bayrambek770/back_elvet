@@ -17,7 +17,7 @@ WORKDIR /app
 # Install dependencies first (leverage Docker cache)
 COPY requirements.prod.txt /app/
 # Upgrade pip tooling first; ensure we can build wheels if necessary (psycopg2)
-RUN pip install --upgrade pip setuptools wheel && pip install -r requirements.txt
+RUN pip install --upgrade pip setuptools wheel && pip install -r requirements.prod.txt
 
 # Copy project
 COPY . /app
