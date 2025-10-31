@@ -23,8 +23,7 @@ RUN pip install --upgrade pip setuptools wheel && pip install -r requirements.pr
 COPY . /app
 
 # Create non-root user
-RUN chmod +x /app/entrypoint.sh && useradd -m appuser && chown -R appuser:appuser /app
-USER appuser
+RUN chmod +x /app/entrypoint.sh
 
 # Expose port
 EXPOSE 8000
