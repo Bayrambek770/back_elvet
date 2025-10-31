@@ -8,6 +8,8 @@ services:
       - db
       - redis
     restart: unless-stopped
+    volume:
+      - ./:/app/
 
   db:
     image: postgres:15
