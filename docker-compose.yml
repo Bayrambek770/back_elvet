@@ -8,7 +8,7 @@ services:
       - db
       - redis
     restart: unless-stopped
-    volume:
+    volumes:
       - ./:/app/
 
   db:
