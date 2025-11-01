@@ -4,7 +4,7 @@ Includes Pets, Medicines, Services, Medical Cards, Payments, Stationary Rooms,
 and Nurse Management (Schedules, Tasks, Salaries).
 """
 
-from rest_framework import permissions, status, viewsets
+from rest_framework import permissions, status, viewsets, generics
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiResponse
@@ -112,6 +112,50 @@ class MedicalCardViewSet(viewsets.ModelViewSet):
     )
     serializer_class = MedicalCardSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+
+# ================
+# Aliased endpoints (explicit paths requested):
+#   /api/client/medical_card/by_user/<id>/
+#   /api/client/medical_card/by_doctor/<id>/
+# Reuse the same serializer and queryset/pagination via ListAPIView
+# ================
+
+
+@extend_schema(
+    tags=["clinic:medical-cards"],
+    summary="List medical cards by client user ID (alias)",
+    responses={200: OpenApiResponse(response=MedicalCardSerializer)},
+)
+class MedicalCardsByUserView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = MedicalCardSerializer
+
+    def get_queryset(self):
+        user_id = self.kwargs.get("user_id")
+        return (
+            MedicalCard.objects.select_related(
+                "client__user", "pet", "doctor__user", "nurse__user", "stationary_room"
+            ).prefetch_related("services", "medicines").filter(client__user_id=user_id)
+        )
+
+
+@extend_schema(
+    tags=["clinic:medical-cards"],
+    summary="List medical cards by doctor ID (alias)",
+    responses={200: OpenApiResponse(response=MedicalCardSerializer)},
+)
+class MedicalCardsByDoctorView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = MedicalCardSerializer
+
+    def get_queryset(self):
+        doctor_id = self.kwargs.get("doctor_id")
+        return (
+            MedicalCard.objects.select_related(
+                "client__user", "pet", "doctor__user", "nurse__user", "stationary_room"
+            ).prefetch_related("services", "medicines").filter(doctor_id=doctor_id)
+        )
 
 
 # =========================

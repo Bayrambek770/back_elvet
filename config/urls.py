@@ -16,6 +16,7 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import include, path
+from clinic.views import MedicalCardsByUserView, MedicalCardsByDoctorView
 from drf_spectacular.views import (
     SpectacularAPIView,
     SpectacularRedocView,
@@ -27,6 +28,9 @@ urlpatterns = [
     path('api/auth/', include('authentication.urls', namespace='authentication')),
     path('api/', include('support_requests.urls', namespace='support_requests')),
     path('api/clinic/', include('clinic.urls', namespace='clinic')),
+    # Aliased medical card endpoints requested
+    path('api/client/medical_card/by_user/<int:user_id>/', MedicalCardsByUserView.as_view(), name='client-medical-cards-by-user'),
+    path('api/client/medical_card/by_doctor/<int:doctor_id>/', MedicalCardsByDoctorView.as_view(), name='client-medical-cards-by-doctor'),
     path('api/users/', include('users.urls', namespace='users')),
     path('bot/', include('telegram_bot.urls')),
     # OpenAPI schema and documentation
