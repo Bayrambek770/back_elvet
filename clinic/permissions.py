@@ -85,3 +85,16 @@ class IsNurseOwnerOrAdmin(permissions.BasePermission):
             owner = getattr(obj, "nurse", None)
             return owner and getattr(owner, "user_id", None) == request.user.id
         return False
+
+
+class IsModeratorWriteVisits(permissions.BasePermission):
+    """Only moderators can create/update/delete Visit records.
+
+    Read access allowed to authenticated users; filtering will be applied in the view.
+    """
+
+    def has_permission(self, request, view):
+        if request.method in permissions.SAFE_METHODS:
+            return bool(request.user and request.user.is_authenticated)
+        # Only moderators can write
+        return bool(request.user and request.user.is_authenticated and getattr(request.user, "role", None) == "moderator")

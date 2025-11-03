@@ -18,6 +18,7 @@ from .views import (
     MedicalUsageView,
     PaymentSummaryView,
     PaymentDayView,
+    VisitViewSet,
 )
 
 app_name = "clinic"
@@ -36,6 +37,7 @@ router.register(r"medicines", MedicineViewSet, basename="medicine")
 router.register(r"services", ServiceViewSet, basename="service")
 router.register(r"medical-cards", MedicalCardViewSet, basename="medical-card")
 router.register(r"payments", PaymentViewSet, basename="payment")
+router.register(r"visits", VisitViewSet, basename="visit")
 
 urlpatterns = [
     path("", include(router.urls)),

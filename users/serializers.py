@@ -191,6 +191,9 @@ class ClientSerializer(serializers.ModelSerializer):
     user_id = serializers.PrimaryKeyRelatedField(
         source="user", queryset=User.objects.all(), write_only=True
     )
+    # Allow updating first_name/last_name of the linked User via client updates
+    first_name = serializers.CharField(write_only=True, required=False)
+    last_name = serializers.CharField(write_only=True, required=False)
     created_by = ModeratorSerializer(read_only=True)
     created_by_id = serializers.PrimaryKeyRelatedField(
         source="created_by", queryset=Moderator.objects.all(), write_only=True
@@ -202,6 +205,8 @@ class ClientSerializer(serializers.ModelSerializer):
             "id",
             "user",
             "user_id",
+            "first_name",
+            "last_name",
             "extra_phone_number",
             "address",
             "created_at",
@@ -209,3 +214,16 @@ class ClientSerializer(serializers.ModelSerializer):
             "created_by_id",
         )
         read_only_fields = ("id", "created_at")
+
+    def update(self, instance, validated_data):
+        # Pop name fields for the linked user and apply
+        user = instance.user
+        first_name = validated_data.pop("first_name", None)
+        last_name = validated_data.pop("last_name", None)
+        if first_name is not None:
+            user.first_name = first_name
+        if last_name is not None:
+            user.last_name = last_name
+        if first_name is not None or last_name is not None:
+            user.save(update_fields=[f for f, v in (("first_name", first_name), ("last_name", last_name)) if v is not None])
+        return super().update(instance, validated_data)

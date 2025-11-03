@@ -25,6 +25,7 @@ from .models import (
     DoctorIncome,
     NurseIncome,
     PaymentDay,
+    Visit,
 )
 
 
@@ -617,3 +618,19 @@ class PaymentDaySerializer(serializers.ModelSerializer):
         model = PaymentDay
         fields = ("date", "price")
         read_only_fields = fields
+
+
+class VisitSerializer(serializers.ModelSerializer):
+    client = ClientSerializer(read_only=True)
+    client_id = serializers.PrimaryKeyRelatedField(
+        source="client", queryset=ClientSerializer.Meta.model.objects.all(), write_only=True
+    )
+    doctor = DoctorSerializer(read_only=True)
+    doctor_id = serializers.PrimaryKeyRelatedField(
+        source="doctor", queryset=DoctorSerializer.Meta.model.objects.all(), write_only=True
+    )
+
+    class Meta:
+        model = Visit
+        fields = ("id", "client", "client_id", "doctor", "doctor_id", "reason", "date", "created_at")
+        read_only_fields = ("id", "created_at")

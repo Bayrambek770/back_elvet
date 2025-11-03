@@ -85,6 +85,34 @@ class ClientViewSet(viewsets.ModelViewSet):
     serializer_class = ClientSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        role = getattr(user, "role", None)
+        if role == RoleChoices.CLIENT:
+            client = getattr(user, "client_profile", None)
+            return qs.filter(pk=getattr(client, "pk", None)) if client else qs.none()
+        if role in {RoleChoices.ADMIN, RoleChoices.MODERATOR} or getattr(user, "is_staff", False):
+            return qs
+        return qs
+
+    def update(self, request, *args, **kwargs):
+        # Allow clients to update only their own record; admins/moderators can update any
+        instance = self.get_object()
+        user = request.user
+        role = getattr(user, "role", None)
+        if role == RoleChoices.CLIENT and getattr(instance, "user_id", None) != user.id:
+            return Response({"detail": "You can only update your own profile."}, status=status.HTTP_403_FORBIDDEN)
+        return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        user = request.user
+        role = getattr(user, "role", None)
+        if role == RoleChoices.CLIENT and getattr(instance, "user_id", None) != user.id:
+            return Response({"detail": "You can only update your own profile."}, status=status.HTTP_403_FORBIDDEN)
+        return super().partial_update(request, *args, **kwargs)
+
 
 class CreateUserView(APIView):
     """Create a new user and trigger role-profile auto-creation via signals.

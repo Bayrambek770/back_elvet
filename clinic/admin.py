@@ -10,6 +10,7 @@ from .models import (
     MedicalCard,
     Payment,
     PaymentDay,
+    Visit,
     StationaryRoom,
     Schedule,
     Task,
@@ -210,3 +211,10 @@ class NurseIncomeAdmin(admin.ModelAdmin):
 class PaymentDayAdmin(admin.ModelAdmin):
     list_display = ("date", "price", "created_at")
     list_filter = ("date",)
+
+
+@admin.register(Visit)
+class VisitAdmin(admin.ModelAdmin):
+    list_display = ("date", "client", "doctor", "reason", "created_at")
+    list_filter = ("date", "doctor")
+    search_fields = ("reason", "client__user__first_name", "client__user__last_name", "doctor__user__first_name", "doctor__user__last_name")

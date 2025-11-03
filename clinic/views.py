@@ -26,6 +26,7 @@ from .models import (
     Service,
     MedicalCard,
     Payment,
+    Visit,
 )
 from .permissions import IsDoctorForScheduleWrite, IsDoctorOrAssignedNurseForTask
 from .serializers import (
@@ -43,8 +44,9 @@ from .serializers import (
     MedicalUsageSerializer,
     PaymentSummarySerializer,
     PaymentDaySerializer,
+    VisitSerializer,
 )
-from .permissions import IsDoctorOwnerOrAdmin, IsNurseOwnerOrAdmin
+from .permissions import IsDoctorOwnerOrAdmin, IsNurseOwnerOrAdmin, IsModeratorWriteVisits
 
 
 # =========================
@@ -374,6 +376,77 @@ class StationaryRoomManageViewSet(viewsets.ModelViewSet):
     queryset = StationaryRoom.objects.select_related("pet").all()
     serializer_class = StationaryRoomSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+
+# =========================
+# Visits
+# =========================
+
+
+@extend_schema_view(
+    list=extend_schema(tags=["clinic:visits"], summary="List visits"),
+    retrieve=extend_schema(tags=["clinic:visits"], summary="Retrieve visit"),
+    create=extend_schema(tags=["clinic:visits"], summary="Create visit"),
+    update=extend_schema(tags=["clinic:visits"], summary="Update visit"),
+    partial_update=extend_schema(tags=["clinic:visits"], summary="Partially update visit"),
+    destroy=extend_schema(tags=["clinic:visits"], summary="Delete visit"),
+)
+class VisitViewSet(viewsets.ModelViewSet):
+    queryset = Visit.objects.select_related("client__user", "doctor__user").all()
+    serializer_class = VisitSerializer
+    permission_classes = [IsModeratorWriteVisits]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        role = getattr(user, "role", None)
+        if role == "doctor":
+            doc = getattr(user, "doctor_profile", None)
+            return qs.filter(doctor=doc) if doc else qs.none()
+        if role in {"admin", "moderator"} or getattr(user, "is_staff", False):
+            return qs
+        return qs.none()
+
+    @action(detail=False, methods=["get"], url_path="my-today", permission_classes=[permissions.IsAuthenticated])
+    def my_today(self, request, *args, **kwargs):
+        """For doctors: return today's visit count for the authenticated doctor."""
+        user = request.user
+        if getattr(user, "role", None) != "doctor":
+            return Response({"detail": "Only doctors can access this endpoint."}, status=status.HTTP_403_FORBIDDEN)
+        doc = getattr(user, "doctor_profile", None)
+        if not doc:
+            return Response({"count": 0})
+        today = timezone.localdate()
+        count = Visit.objects.filter(doctor=doc, date=today).count()
+        return Response({"count": count})
+
+    @action(detail=False, methods=["get"], url_path="today", permission_classes=[permissions.IsAuthenticated])
+    def today(self, request, *args, **kwargs):
+        """Admin/moderator: return today's total visits and per-doctor breakdown."""
+        user = request.user
+        if not (getattr(user, "role", None) in {"admin", "moderator"} or getattr(user, "is_staff", False)):
+            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        today = timezone.localdate()
+        base = Visit.objects.filter(date=today)
+        total = base.count()
+        per_doc = (
+            base.values("doctor_id", "doctor__user__first_name", "doctor__user__last_name")
+            .annotate(count=Count("id"))
+            .order_by("doctor_id")
+        )
+        data = {
+            "date": today.isoformat(),
+            "total": total,
+            "by_doctor": [
+                {
+                    "doctor_id": row["doctor_id"],
+                    "doctor_name": f"{row['doctor__user__first_name']} {row['doctor__user__last_name']}".strip(),
+                    "count": row["count"],
+                }
+                for row in per_doc
+            ],
+        }
+        return Response(data)
 
 
 @extend_schema(

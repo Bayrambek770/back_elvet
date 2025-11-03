@@ -253,6 +253,27 @@ class PaymentDay(models.Model):
         return f"{self.date}: {self.price}"
 
 
+class Visit(models.Model):
+    """A client visit to the clinic for a specific doctor.
+
+    Captures which client came, to which doctor, optional reason, and the visit date.
+    """
+
+    client = models.ForeignKey(Client, on_delete=models.PROTECT, related_name="visits")
+    doctor = models.ForeignKey(Doctor, on_delete=models.PROTECT, related_name="visits")
+    reason = models.TextField(blank=True, null=True)
+    date = models.DateField(default=timezone.localdate)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Visit"
+        verbose_name_plural = "Visits"
+        ordering = ("-date", "-created_at")
+
+    def __str__(self) -> str:  # pragma: no cover
+        return f"Visit: client {self.client_id} -> doctor {self.doctor_id} on {self.date}"
+
+
 class MedicalCardService(models.Model):
     """Selected service for a medical card with the chosen price.
 
