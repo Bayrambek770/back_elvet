@@ -8,9 +8,16 @@ from rest_framework import permissions, status, viewsets, generics
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiResponse
+from django.db.models import Count, Sum
+from django.db.models.functions import TruncDate, TruncWeek, TruncMonth
+from django.utils.dateparse import parse_date
+from datetime import timedelta
+from django.utils import timezone
 
 from .models import (
     NurseDailySalary,
+    DoctorTask,
+    DoctorIncome,
     Schedule,
     Task,
     StationaryRoom,
@@ -23,6 +30,8 @@ from .models import (
 from .permissions import IsDoctorForScheduleWrite, IsDoctorOrAssignedNurseForTask
 from .serializers import (
     NurseDailySalarySerializer,
+    DoctorTaskSerializer,
+    DoctorIncomeSerializer,
     ScheduleSerializer,
     TaskSerializer,
     StationaryRoomSerializer,
@@ -31,7 +40,11 @@ from .serializers import (
     ServiceSerializer,
     MedicalCardSerializer,
     PaymentSerializer,
+    MedicalUsageSerializer,
+    PaymentSummarySerializer,
+    PaymentDaySerializer,
 )
+from .permissions import IsDoctorOwnerOrAdmin, IsNurseOwnerOrAdmin
 
 
 # =========================
@@ -227,6 +240,17 @@ class TaskViewSet(viewsets.ModelViewSet):
                     return Response({"detail": "Only the assigned nurse can complete the task."}, status=status.HTTP_403_FORBIDDEN)
         return super().update(request, *args, partial=partial, **kwargs)
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        # Optional filtering by day
+        day = self.request.query_params.get("day")
+        if day:
+            try:
+                qs = qs.filter(day=day)
+            except Exception:
+                pass
+        return qs
+
 
 @extend_schema_view(
     list=extend_schema(tags=["clinic:nurse-daily-salaries"], summary="List nurse daily salaries"),
@@ -251,6 +275,70 @@ class NurseDailySalaryViewSet(viewsets.ReadOnlyModelViewSet):
         if user.is_staff:
             return qs
         return qs.none()
+
+
+@extend_schema_view(
+    list=extend_schema(tags=["clinic:doctor-tasks"], summary="List doctor tasks"),
+    retrieve=extend_schema(tags=["clinic:doctor-tasks"], summary="Retrieve doctor task"),
+    create=extend_schema(tags=["clinic:doctor-tasks"], summary="Create doctor task"),
+    update=extend_schema(tags=["clinic:doctor-tasks"], summary="Update doctor task"),
+    partial_update=extend_schema(tags=["clinic:doctor-tasks"], summary="Partially update doctor task"),
+    destroy=extend_schema(tags=["clinic:doctor-tasks"], summary="Delete doctor task"),
+)
+class DoctorTaskViewSet(viewsets.ModelViewSet):
+    queryset = DoctorTask.objects.select_related("doctor__user", "medical_card", "service").all()
+    serializer_class = DoctorTaskSerializer
+    permission_classes = [IsDoctorOwnerOrAdmin]
+
+    def perform_create(self, serializer):
+        # Ensure the doctor is the requester for writes
+        user = self.request.user
+        doctor_profile = getattr(user, "doctor_profile", None)
+        if doctor_profile:
+            serializer.save(doctor=doctor_profile)
+        else:
+            serializer.save()
+
+
+@extend_schema_view(
+    list=extend_schema(tags=["clinic:doctor-incomes"], summary="List doctor incomes"),
+    retrieve=extend_schema(tags=["clinic:doctor-incomes"], summary="Retrieve doctor income"),
+)
+class DoctorIncomeViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = DoctorIncome.objects.select_related("doctor__user").all()
+    serializer_class = DoctorIncomeSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if getattr(user, "role", None) == "doctor":
+            doc = getattr(user, "doctor_profile", None)
+            if doc:
+                return qs.filter(doctor=doc)
+            return qs.none()
+        if getattr(user, "role", None) in {"admin", "moderator"} or getattr(user, "is_staff", False):
+            return qs
+        return qs.none()
+
+
+@extend_schema_view(
+    list=extend_schema(tags=["clinic:nurse-incomes"], summary="List nurse incomes"),
+    retrieve=extend_schema(tags=["clinic:nurse-incomes"], summary="Retrieve nurse income"),
+)
+class NurseIncomeViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = NurseDailySalary.objects.none()  # placeholder for type; overridden in get_queryset
+    serializer_class = None  # set dynamically
+    permission_classes = [IsNurseOwnerOrAdmin]
+
+    def get_queryset(self):
+        # Lazy import to avoid circulars
+        from .models import NurseIncome
+        return NurseIncome.objects.select_related("nurse__user").all()
+
+    def get_serializer_class(self):
+        from .serializers import NurseIncomeSerializer
+        return NurseIncomeSerializer
 
 
 @extend_schema_view(
@@ -286,3 +374,179 @@ class StationaryRoomManageViewSet(viewsets.ModelViewSet):
     queryset = StationaryRoom.objects.select_related("pet").all()
     serializer_class = StationaryRoomSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+
+@extend_schema(
+    tags=["clinic:analytics"],
+    summary="Aggregated medicine usage per doctor",
+    description=(
+        "Return a list where each item shows which doctor used what medicine and how many times.\n"
+        "Optional filters: ?doctor_id=<id>&start_date=YYYY-MM-DD&end_date=YYYY-MM-DD"
+    ),
+    responses={200: OpenApiResponse(response=MedicalUsageSerializer)},
+)
+class MedicalUsageView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = MedicalUsageSerializer
+
+    def list(self, request, *args, **kwargs):
+        through = MedicalCard.medicines.through
+        qs = through.objects.all()
+
+        doctor_id = request.query_params.get("doctor_id")
+        if doctor_id:
+            qs = qs.filter(medicalcard__doctor_id=doctor_id)
+        start_date = request.query_params.get("start_date")
+        if start_date:
+            qs = qs.filter(medicalcard__created_at__date__gte=start_date)
+        end_date = request.query_params.get("end_date")
+        if end_date:
+            qs = qs.filter(medicalcard__created_at__date__lte=end_date)
+
+        values_qs = (
+            qs.values(
+                "medicalcard__doctor_id",
+                "medicalcard__doctor__user__first_name",
+                "medicalcard__doctor__user__last_name",
+                "medicine_id",
+                "medicine__name",
+            )
+            .annotate(usage_count=Count("id"))
+            .order_by("-usage_count", "medicalcard__doctor_id", "medicine_id")
+        )
+
+        data = [
+            {
+                "doctor_id": row["medicalcard__doctor_id"],
+                "doctor_name": f"{row['medicalcard__doctor__user__first_name']} {row['medicalcard__doctor__user__last_name']}".strip(),
+                "medicine_id": row["medicine_id"],
+                "medicine_name": row["medicine__name"],
+                "usage_count": row["usage_count"],
+            }
+            for row in values_qs
+        ]
+
+        page = self.paginate_queryset(data)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(data, many=True)
+        return Response(serializer.data)
+
+
+@extend_schema(
+    tags=["clinic:analytics"],
+    summary="Revenue summary (payments)",
+    description=(
+        "Aggregate paid payments by day, week, or month within a date range.\n"
+        "Query params: start=YYYY-MM-DD, end=YYYY-MM-DD, group_by=day|week|month (default: day)."
+    ),
+    responses={200: OpenApiResponse(response=PaymentSummarySerializer)},
+)
+class PaymentSummaryView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = PaymentSummarySerializer
+
+    def get(self, request, *args, **kwargs):
+        group_by = request.query_params.get("group_by", "day").lower()
+        start_str = request.query_params.get("start")
+        end_str = request.query_params.get("end")
+
+        # Default range: last 30 days
+        today = timezone.localdate()
+        start_date = parse_date(start_str) if start_str else (today - timedelta(days=30))
+        end_date = parse_date(end_str) if end_str else today
+        if start_date and end_date and end_date < start_date:
+            return Response({"detail": "end must be on or after start"}, status=status.HTTP_400_BAD_REQUEST)
+
+        qs = Payment.objects.filter(status="paid")
+        if start_date:
+            qs = qs.filter(created_at__date__gte=start_date)
+        if end_date:
+            qs = qs.filter(created_at__date__lte=end_date)
+
+        # Overall totals
+        agg = qs.aggregate(total_amount=Sum("amount"), total_count=Count("id"))
+        total_amount = agg.get("total_amount") or 0
+        total_count = agg.get("total_count") or 0
+
+        # Grouping
+        if group_by == "day":
+            trunc = TruncDate("created_at")
+            values_name = "period"
+        elif group_by == "week":
+            trunc = TruncWeek("created_at")
+            values_name = "period"
+        elif group_by == "month":
+            trunc = TruncMonth("created_at")
+            values_name = "period"
+        else:
+            return Response({"detail": "group_by must be one of: day, week, month"}, status=status.HTTP_400_BAD_REQUEST)
+
+        grouped = (
+            qs.annotate(period=trunc)
+            .values(values_name)
+            .annotate(total=Sum("amount"), count=Count("id"))
+            .order_by("period")
+        )
+
+        # Serialize items with string periods for consistency
+        items = []
+        for row in grouped:
+            period = row.get("period")
+            if period is None:
+                p_str = "unknown"
+            else:
+                if group_by == "month":
+                    p_str = period.strftime("%Y-%m")
+                else:
+                    p_str = period.date().isoformat() if hasattr(period, "date") else str(period)
+            items.append({
+                "period": p_str,
+                "total": row.get("total") or 0,
+                "count": row.get("count") or 0,
+            })
+
+        data = {
+            "total_amount": total_amount,
+            "total_count": total_count,
+            "items": items,
+        }
+        serializer = self.get_serializer(data)
+        serializer.is_valid(raise_exception=False)
+        return Response(serializer.data)
+
+
+@extend_schema(
+    tags=["clinic:analytics"],
+    summary="Payment days (last N days)",
+    description=(
+        "Return last N days of income, filling missing days with 0.\n"
+        "Query params: days=1|7|30 (default: 7)."
+    ),
+    responses={200: OpenApiResponse(response=PaymentDaySerializer)},
+)
+class PaymentDayView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = PaymentDaySerializer
+
+    def get_queryset(self):
+        from .models import PaymentDay
+        days = self.request.query_params.get("days")
+        try:
+            days = int(days) if days is not None else 7
+        except Exception:
+            days = 7
+        days = max(1, min(days, 365))
+
+        today = timezone.localdate()
+        start = today - timedelta(days=days - 1)
+
+        # Ensure records exist for each day in range (idempotent)
+        cur = start
+        while cur <= today:
+            PaymentDay.objects.get_or_create(date=cur, defaults={"price": 0})
+            cur += timedelta(days=1)
+
+        return PaymentDay.objects.filter(date__gte=start, date__lte=today).order_by("date")

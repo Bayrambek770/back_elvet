@@ -219,10 +219,25 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'clinic.tasks.reset_daily_nurse_salary',
         'schedule': crontab(minute=0, hour=0),
     },
+    # Roll nurse income daily totals into monthly totals at 00:05
+    'nurse-income-daily-rollover-0005': {
+        'task': 'clinic.tasks.nurse_income_daily_rollover',
+        'schedule': crontab(minute=5, hour=0),
+    },
     # Send revisit reminders at 08:00 local time daily
     'send-revisit-reminders-0800': {
         'task': 'clinic.tasks.send_revisit_reminders',
         'schedule': crontab(minute=0, hour=8),
+    },
+    # Reset doctor monthly totals on the first day of each month at 00:10
+    'reset-doctor-monthly-income-0010': {
+        'task': 'clinic.tasks.reset_doctor_monthly_income',
+        'schedule': crontab(minute=10, hour=0),
+    },
+    # Ensure a PaymentDay row exists for today at 00:01 daily
+    'ensure-payment-day-exists-0001': {
+        'task': 'clinic.tasks.ensure_payment_day_exists',
+        'schedule': crontab(minute=1, hour=0),
     },
 }
 

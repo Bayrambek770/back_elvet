@@ -153,10 +153,10 @@ class Moderator(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="moderator_profile"
     )  # One-to-one with user
     work_start_date = models.DateField()
-    salary = models.DecimalField(max_digits=12, decimal_places=2)
+    salary = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     created_by = models.ForeignKey(
-        Admin, on_delete=models.PROTECT, related_name="created_moderators"
-    )  # Created by admin
+        Admin, on_delete=models.PROTECT, related_name="created_moderators", blank=True, null=True
+    )  # Created by admin (optional on auto-create)
     active = models.BooleanField(default=True)
     notes = models.TextField(blank=True, null=True)
 
@@ -179,11 +179,11 @@ class Doctor(models.Model):
     )  # One-to-one with user
     specialization = models.CharField(max_length=255)
     work_start_date = models.DateField()
-    salary_per_case = models.DecimalField(max_digits=12, decimal_places=2)
+    salary_per_case = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     active = models.BooleanField(default=True)
     created_by = models.ForeignKey(
-        Admin, on_delete=models.PROTECT, related_name="created_doctors"
-    )  # Created by admin
+        Admin, on_delete=models.PROTECT, related_name="created_doctors", blank=True, null=True
+    )  # Created by admin (optional on auto-create)
 
     class Meta:
         verbose_name = "Doctor"
@@ -203,7 +203,7 @@ class Nurse(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="nurse_profile"
     )  # One-to-one with user
     work_start_date = models.DateField()
-    salary_per_day = models.DecimalField(max_digits=12, decimal_places=2)
+    salary_per_day = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     total_salary = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     # Nurse Management System additions
     rate_per_task = models.DecimalField(
@@ -220,8 +220,8 @@ class Nurse(models.Model):
     )
     active = models.BooleanField(default=True)
     created_by = models.ForeignKey(
-        Admin, on_delete=models.PROTECT, related_name="created_nurses"
-    )  # Created by admin
+        Admin, on_delete=models.PROTECT, related_name="created_nurses", blank=True, null=True
+    )  # Created by admin (optional on auto-create)
 
     class Meta:
         verbose_name = "Nurse"
@@ -239,7 +239,8 @@ class Nurse(models.Model):
         from django.core.exceptions import ValidationError
 
         if not self.created_by_id:
-            raise ValidationError("Nurse must be created by an Admin user.")
+            # Allow auto-created nurses without creator; enforce in admin/forms later
+            pass
         # Validate user role
         if getattr(self.user, "role", None) != RoleChoices.NURSE:
             raise ValidationError("Linked user must have role='nurse'.")

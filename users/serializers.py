@@ -7,7 +7,7 @@ Provides ModelSerializers for User and role profile models.
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
-from .models import Admin, Client, Doctor, Nurse, Moderator
+from .models import Admin, Client, Doctor, Nurse, Moderator, RoleChoices
 
 User = get_user_model()
 
@@ -51,6 +51,37 @@ class UserSerializer(serializers.ModelSerializer):
             instance.set_password(password)
         instance.save()
         return instance
+
+
+class CreateUserSerializer(serializers.ModelSerializer):
+    """Serializer dedicated for creating a new User via public API.
+
+    Requires first_name, last_name, phone_number, password, and role.
+    Password is write-only and will be hashed. Returns basic user info.
+    """
+
+    password = serializers.CharField(write_only=True, required=True, min_length=6)
+    role = serializers.ChoiceField(choices=RoleChoices.choices, required=True)
+
+    class Meta:
+        model = User
+        fields = (
+            "id",
+            "first_name",
+            "last_name",
+            "phone_number",
+            "password",
+            "role",
+            "date_joined",
+        )
+        read_only_fields = ("id", "date_joined")
+
+    def create(self, validated_data):
+        password = validated_data.pop("password")
+        user = User(**validated_data)
+        user.set_password(password)
+        user.save()
+        return user
 
 
 class AdminSerializer(serializers.ModelSerializer):

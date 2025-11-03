@@ -9,10 +9,14 @@ from .models import (
     Pet,
     MedicalCard,
     Payment,
+    PaymentDay,
     StationaryRoom,
     Schedule,
     Task,
     NurseDailySalary,
+    DoctorTask,
+    DoctorIncome,
+    NurseIncome,
 )
 
 
@@ -153,7 +157,7 @@ class MedicalCardAdmin(admin.ModelAdmin):
 
 @admin.register(Payment)
 class PaymentAdmin(admin.ModelAdmin):
-    list_display = ("medical_card", "status", "method", "processed_by", "created_at")
+    list_display = ("medical_card", "status", "method", "amount", "processed_by", "created_at")
     list_filter = ("status", "method")
 
 
@@ -181,3 +185,28 @@ class TaskAdmin(admin.ModelAdmin):
 class NurseDailySalaryAdmin(admin.ModelAdmin):
     list_display = ("nurse", "date", "total_tasks", "completed_tasks", "salary")
     list_filter = ("date", "nurse")
+    
+
+@admin.register(DoctorTask)
+class DoctorTaskAdmin(admin.ModelAdmin):
+    list_display = ("id", "doctor", "medical_card", "service", "is_done", "price", "created_at")
+    list_filter = ("is_done", "doctor")
+    search_fields = ("id", "doctor__user__first_name", "doctor__user__last_name")
+
+
+@admin.register(DoctorIncome)
+class DoctorIncomeAdmin(admin.ModelAdmin):
+    list_display = ("doctor", "monthly_total", "last_reset")
+    readonly_fields = ("monthly_total", "last_reset")
+
+
+@admin.register(NurseIncome)
+class NurseIncomeAdmin(admin.ModelAdmin):
+    list_display = ("nurse", "daily_total", "monthly_total", "last_reset")
+    readonly_fields = ("daily_total", "monthly_total", "last_reset")
+
+
+@admin.register(PaymentDay)
+class PaymentDayAdmin(admin.ModelAdmin):
+    list_display = ("date", "price", "created_at")
+    list_filter = ("date",)

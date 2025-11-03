@@ -6,11 +6,13 @@ StationaryRoom with nested relationships where meaningful.
 
 # DRF imports
 from rest_framework import serializers
+from decimal import Decimal
 
 # App imports
 from users.serializers import ClientSerializer, DoctorSerializer, NurseSerializer, ModeratorSerializer
 from .models import (
     MedicalCard,
+    MedicalCardService,
     Medicine,
     NurseDailySalary,
     Payment,
@@ -19,6 +21,10 @@ from .models import (
     Service,
     Task,
     StationaryRoom,
+    DoctorTask,
+    DoctorIncome,
+    NurseIncome,
+    PaymentDay,
 )
 
 
@@ -73,6 +79,7 @@ class ServiceSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "price",
+            "price_up_to",
             "description",
             "created_by",
         )
@@ -139,6 +146,8 @@ class MedicalCardSerializer(serializers.ModelSerializer):
     )
 
     services = ServiceSerializer(many=True, read_only=True)
+    # Selected services with chosen prices
+    services_selected = serializers.SerializerMethodField(read_only=True)
     medicines = MedicineSerializer(many=True, read_only=True)
 
     stationary_room = StationaryRoomSerializer(read_only=True)
@@ -153,6 +162,10 @@ class MedicalCardSerializer(serializers.ModelSerializer):
 
     service_ids = serializers.PrimaryKeyRelatedField(
         source="services", queryset=Service.objects.all(), many=True, write_only=True, required=False
+    )
+    # New format allowing custom price per service
+    services_priced = serializers.ListField(
+        child=serializers.DictField(), write_only=True, required=False, help_text="[{service_id, price}]"
     )
     medicine_ids = serializers.PrimaryKeyRelatedField(
         source="medicines", queryset=Medicine.objects.all(), many=True, write_only=True, required=False
@@ -171,7 +184,7 @@ class MedicalCardSerializer(serializers.ModelSerializer):
             "stationary_room", "stationary_room_id",
             "room_admission_date", "room_release_date",
             # chargeables
-            "services", "service_ids",
+            "services", "services_selected", "service_ids", "services_priced",
             "medicines", "medicine_ids",
             # card details
             "status", "diagnosis", "notes",
@@ -195,8 +208,16 @@ class MedicalCardSerializer(serializers.ModelSerializer):
         services = validated_data.pop("services", [])
         medicines = validated_data.pop("medicines", [])
         card = super().create(validated_data)
-        if services:
-            card.services.set(services)
+        services_priced = self.initial_data.get("services_priced") if isinstance(self.initial_data, dict) else None
+        # Apply priced selections if provided; else fallback to plain set
+        if services_priced:
+            self._apply_services_priced(card, services_priced)
+        elif services:
+            # Back-compat: set selections with fixed price from service
+            for svc in services:
+                MedicalCardService.objects.update_or_create(
+                    medical_card=card, service=svc, defaults={"price": svc.price}
+                )
         if medicines:
             card.medicines.set(medicines)
         # Stationary room: ensure availability, set pet linkage and dates
@@ -210,8 +231,18 @@ class MedicalCardSerializer(serializers.ModelSerializer):
         medicines = validated_data.pop("medicines", None)
         old_room = instance.stationary_room
         card = super().update(instance, validated_data)
-        if services is not None:
-            card.services.set(services)
+        services_priced = self.initial_data.get("services_priced") if isinstance(self.initial_data, dict) else None
+        if services_priced is not None:
+            # Replace selections per request
+            MedicalCardService.objects.filter(medical_card=card).delete()
+            if services_priced:
+                self._apply_services_priced(card, services_priced)
+        elif services is not None:
+            MedicalCardService.objects.filter(medical_card=card).delete()
+            for svc in services:
+                MedicalCardService.objects.update_or_create(
+                    medical_card=card, service=svc, defaults={"price": svc.price}
+                )
         if medicines is not None:
             card.medicines.set(medicines)
         # Release previous room if changed or cleared
@@ -291,6 +322,46 @@ class MedicalCardSerializer(serializers.ModelSerializer):
             room.release_date = None
         room.save()
 
+    def get_services_selected(self, obj: MedicalCard):
+        items = []
+        for link in obj.service_links.select_related("service").all():
+            items.append({
+                "service": ServiceSerializer(link.service).data,
+                "price": str(link.price),
+            })
+        return items
+
+    def _apply_services_priced(self, card: MedicalCard, selections):
+        """Create priced service links with validation.
+
+        selections: list of dicts {service_id, price}
+        """
+        from decimal import Decimal as D
+        for sel in selections:
+            svc_id = sel.get("service_id")
+            price = sel.get("price")
+            if svc_id is None or price is None:
+                raise serializers.ValidationError({"services_priced": "Each item must include service_id and price."})
+            try:
+                svc = Service.objects.get(pk=svc_id)
+            except Service.DoesNotExist:
+                raise serializers.ValidationError({"services_priced": f"Service {svc_id} not found."})
+            price = D(str(price))
+            # Validate price bounds
+            if svc.price_up_to is None:
+                if price != svc.price:
+                    raise serializers.ValidationError({"services_priced": f"Price for service {svc.name} must be exactly {svc.price}."})
+            else:
+                low = svc.price
+                high = svc.price_up_to
+                if price < low or price > high:
+                    raise serializers.ValidationError({"services_priced": f"Price for service {svc.name} must be between {low} and {high}."})
+            MedicalCardService.objects.update_or_create(
+                medical_card=card,
+                service=svc,
+                defaults={"price": price},
+            )
+
 
 class PaymentSerializer(serializers.ModelSerializer):
     """Serializer for Payment model."""
@@ -315,6 +386,7 @@ class PaymentSerializer(serializers.ModelSerializer):
             "medical_card_id",
             "status",
             "method",
+            "amount",
             "processed_by",
             "processed_by_id",
             "created_at",
@@ -378,6 +450,10 @@ class TaskSerializer(serializers.ModelSerializer):
     )
 
     schedule = serializers.PrimaryKeyRelatedField(read_only=True)
+    medical_card_id = serializers.PrimaryKeyRelatedField(
+        source="medical_card", queryset=MedicalCard.objects.all(), write_only=True, required=False
+    )
+    medical_card = serializers.PrimaryKeyRelatedField(read_only=True)
     nurse = NurseSerializer(read_only=True)
 
     class Meta:
@@ -388,11 +464,14 @@ class TaskSerializer(serializers.ModelSerializer):
             "schedule_id",
             "nurse",
             "nurse_id",
+            "medical_card",
+            "medical_card_id",
             "description",
             "day",
             "due_time",
             "is_done",
             "done_at",
+            "price",
         )
         read_only_fields = ("id", "done_at")
 
@@ -400,6 +479,9 @@ class TaskSerializer(serializers.ModelSerializer):
         schedule = attrs.get("schedule") or getattr(self.instance, "schedule", None)
         nurse = attrs.get("nurse") or getattr(self.instance, "nurse", None)
         day = attrs.get("day") or getattr(self.instance, "day", None)
+        # Prevent marking done twice
+        if getattr(self.instance, "is_done", False) and attrs.get("is_done") is True:
+            raise serializers.ValidationError({"is_done": "Task is already marked as done."})
         # Nurse must be the schedule's assigned nurse
         if schedule and nurse and schedule.assigned_nurse_id != nurse.id:
             raise serializers.ValidationError({"nurse_id": "Nurse must match the schedule's assigned nurse."})
@@ -407,6 +489,79 @@ class TaskSerializer(serializers.ModelSerializer):
         if schedule and day and (day < schedule.start_date or day > schedule.end_date):
             raise serializers.ValidationError({"day": "Task day must be within the schedule date range."})
         return attrs
+
+
+class DoctorTaskSerializer(serializers.ModelSerializer):
+    """Serializer for DoctorTask with write-by-ID for relations.
+
+    Price defaults from selected service if not provided.
+    """
+
+    doctor_id = serializers.PrimaryKeyRelatedField(
+        source="doctor", queryset=DoctorSerializer.Meta.model.objects.all(), write_only=True
+    )
+    medical_card_id = serializers.PrimaryKeyRelatedField(
+        source="medical_card", queryset=MedicalCard.objects.all(), write_only=True
+    )
+    service_id = serializers.PrimaryKeyRelatedField(
+        source="service", queryset=Service.objects.all(), write_only=True
+    )
+
+    doctor = DoctorSerializer(read_only=True)
+    medical_card = serializers.PrimaryKeyRelatedField(read_only=True)
+    service = ServiceSerializer(read_only=True)
+
+    class Meta:
+        model = DoctorTask
+        fields = (
+            "id",
+            "doctor",
+            "doctor_id",
+            "medical_card",
+            "medical_card_id",
+            "service",
+            "service_id",
+            "is_done",
+            "done_at",
+            "price",
+            "created_at",
+        )
+        read_only_fields = ("id", "done_at", "created_at")
+
+    def validate(self, attrs):
+        card = attrs.get("medical_card") or getattr(self.instance, "medical_card", None)
+        doc = attrs.get("doctor") or getattr(self.instance, "doctor", None)
+        # Prevent double-done
+        if getattr(self.instance, "is_done", False) and attrs.get("is_done") is True:
+            raise serializers.ValidationError({"is_done": "Task is already marked as done."})
+        if card and doc and card.doctor_id != doc.id:
+            raise serializers.ValidationError({"doctor_id": "Doctor must match the medical card's doctor."})
+        return attrs
+
+    def create(self, validated_data):
+        # Ensure price defaults from service
+        svc = validated_data.get("service")
+        if svc and (validated_data.get("price") in (None, 0, Decimal("0"))):
+            validated_data["price"] = svc.price
+        return super().create(validated_data)
+
+
+class DoctorIncomeSerializer(serializers.ModelSerializer):
+    doctor = DoctorSerializer(read_only=True)
+
+    class Meta:
+        model = DoctorIncome
+        fields = ("doctor", "monthly_total", "last_reset")
+        read_only_fields = fields
+
+
+class NurseIncomeSerializer(serializers.ModelSerializer):
+    nurse = NurseSerializer(read_only=True)
+
+    class Meta:
+        model = NurseIncome
+        fields = ("nurse", "daily_total", "monthly_total", "last_reset")
+        read_only_fields = fields
 
 
 class NurseDailySalarySerializer(serializers.ModelSerializer):
@@ -424,4 +579,41 @@ class NurseDailySalarySerializer(serializers.ModelSerializer):
             "completed_tasks",
             "salary",
         )
+        read_only_fields = fields
+
+
+class MedicalUsageSerializer(serializers.Serializer):
+    """Aggregated medicine usage per doctor.
+
+    Represents how many times a doctor used a specific medicine across
+    medical cards.
+    """
+
+    doctor_id = serializers.IntegerField()
+    doctor_name = serializers.CharField()
+    medicine_id = serializers.IntegerField()
+    medicine_name = serializers.CharField()
+    usage_count = serializers.IntegerField()
+
+
+class PaymentSummaryItemSerializer(serializers.Serializer):
+    """Represents a grouped revenue bucket (day/week/month)."""
+
+    period = serializers.CharField(help_text="Grouping key: ISO date for day, week start date for week, YYYY-MM for month")
+    total = serializers.DecimalField(max_digits=14, decimal_places=2)
+    count = serializers.IntegerField()
+
+
+class PaymentSummarySerializer(serializers.Serializer):
+    """Revenue summary response schema."""
+
+    total_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    total_count = serializers.IntegerField()
+    items = PaymentSummaryItemSerializer(many=True)
+
+
+class PaymentDaySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PaymentDay
+        fields = ("date", "price")
         read_only_fields = fields

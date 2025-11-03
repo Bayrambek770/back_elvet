@@ -8,7 +8,7 @@ StationaryRooms and their relationships with user profiles.
 from decimal import Decimal
 
 # Django imports
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Sum
 from django.utils import timezone
 
@@ -79,6 +79,13 @@ class Service(models.Model):
 
     name = models.CharField(max_length=255)
     price = models.DecimalField(max_digits=12, decimal_places=2)
+    price_up_to = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        blank=True,
+        null=True,
+        help_text="Optional upper bound for variable pricing"
+    )
     description = models.TextField(blank=True, null=True)
     created_by = models.ForeignKey(
         Admin, on_delete=models.PROTECT, related_name="services"
@@ -127,8 +134,8 @@ class MedicalCard(models.Model):
     room_release_date = models.DateTimeField(blank=True, null=True)
 
     services = models.ManyToManyField(
-        Service, related_name="medical_cards", blank=True
-    )  # Services rendered
+        Service, related_name="medical_cards", blank=True, through='MedicalCardService'
+    )  # Services rendered with optional variable price via through model
     medicines = models.ManyToManyField(
         Medicine, related_name="medical_cards", blank=True
     )  # Medicines used
@@ -169,7 +176,10 @@ class MedicalCard(models.Model):
 
     def update_total_fee(self) -> None:
         """Recalculate total fee from associated services and medicines."""
-        service_total = sum((s.price for s in self.services.all()), start=Decimal("0"))
+        # Sum selected prices from through model
+        service_total = sum(
+            (ms.price for ms in self.service_links.all()), start=Decimal("0")
+        )
         medicine_total = sum((m.price for m in self.medicines.all()), start=Decimal("0"))
         self.total_fee = service_total + medicine_total
         # Don't call save(update_fields=[...]) here to avoid recursion in signals.
@@ -208,6 +218,7 @@ class Payment(models.Model):
     )  # One payment per card
     status = models.CharField(max_length=16, choices=PaymentStatus.choices, default=PaymentStatus.PENDING)
     method = models.CharField(max_length=16, choices=PaymentMethod.choices)
+    amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0"))
     processed_by = models.ForeignKey(
         Moderator, on_delete=models.PROTECT, related_name="processed_payments"
     )  # Processed by moderator
@@ -220,6 +231,45 @@ class Payment(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover
         return f"Payment for Card #{self.medical_card_id} - {self.status}"
+
+
+class PaymentDay(models.Model):
+    """Aggregated payments per calendar day.
+
+    Keeps a single row per day with the total income captured that day.
+    If no payments occur on a day, a row can exist with price=0 for reporting.
+    """
+
+    date = models.DateField(unique=True)
+    price = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0"))
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Payment Day"
+        verbose_name_plural = "Payment Days"
+        ordering = ("-date",)
+
+    def __str__(self) -> str:  # pragma: no cover
+        return f"{self.date}: {self.price}"
+
+
+class MedicalCardService(models.Model):
+    """Selected service for a medical card with the chosen price.
+
+    If Service.price_up_to is not set, price should equal Service.price.
+    """
+
+    medical_card = models.ForeignKey(MedicalCard, on_delete=models.CASCADE, related_name="service_links")
+    service = models.ForeignKey(Service, on_delete=models.PROTECT, related_name="card_links")
+    price = models.DecimalField(max_digits=12, decimal_places=2)
+
+    class Meta:
+        verbose_name = "Medical Card Service"
+        verbose_name_plural = "Medical Card Services"
+        unique_together = ("medical_card", "service")
+
+    def __str__(self) -> str:  # pragma: no cover
+        return f"Card {self.medical_card_id} - {self.service_id}: {self.price}"
 
 
 class StationaryRoom(models.Model):
@@ -267,7 +317,6 @@ from django.db.models.signals import m2m_changed
 from django.dispatch import receiver
 
 
-@receiver(m2m_changed, sender=MedicalCard.services.through)
 @receiver(m2m_changed, sender=MedicalCard.medicines.through)
 def update_total_fee_on_m2m_change(sender, instance: MedicalCard, action: str, **kwargs):
     """Recalculate total fee whenever services or medicines are modified."""
@@ -276,18 +325,65 @@ def update_total_fee_on_m2m_change(sender, instance: MedicalCard, action: str, *
 
 
 # Keep MedicalCard status/closed_at in sync with payments
-from django.db.models.signals import post_save
+from django.db.models.signals import post_save, post_delete, pre_save
+from django.db.models import F
 
 
 @receiver(post_save, sender=Payment)
 def set_card_paid_on_payment(sender, instance: Payment, **kwargs):
     """When a payment is marked PAID, set the medical card to PAID and close it."""
     if instance.status == PaymentStatus.PAID:
+        # Ensure amount is recorded; default to medical card's total_fee if not provided
+        if instance.amount is None or instance.amount == 0:
+            try:
+                Payment.objects.filter(pk=instance.pk).update(amount=instance.medical_card.total_fee)
+            except Exception:
+                pass
         card = instance.medical_card
         if card.status != MedicalCardStatus.PAID:
             card.status = MedicalCardStatus.PAID
             # MedicalCard.save will populate closed_at when status is PAID
             card.save(update_fields=["status", "closed_at"])  # type: ignore[misc]
+
+
+# Track transitions to PAID to update PaymentDay totals
+@receiver(pre_save, sender=Payment)
+def mark_payment_transition(sender, instance: Payment, **kwargs):
+    if not instance.pk:
+        # New object; mark if created as PAID
+        instance._became_paid = (instance.status == PaymentStatus.PAID)
+        return
+    try:
+        prev = Payment.objects.get(pk=instance.pk)
+    except Payment.DoesNotExist:
+        prev = None
+    instance._became_paid = bool(prev and prev.status != PaymentStatus.PAID and instance.status == PaymentStatus.PAID)
+
+
+@receiver(post_save, sender=Payment)
+def update_payment_day_on_paid(sender, instance: Payment, created: bool, **kwargs):
+    became_paid = bool(getattr(instance, "_became_paid", False) or (created and instance.status == PaymentStatus.PAID))
+    if not became_paid:
+        return
+    # Determine effective amount, fallback to card.total_fee if zero
+    amount = instance.amount or instance.medical_card.total_fee
+    if not amount:
+        return
+    day = timezone.localdate()
+    obj, _ = PaymentDay.objects.get_or_create(date=day, defaults={"price": Decimal("0")})
+    # Atomic increment
+    PaymentDay.objects.filter(pk=obj.pk).update(price=F("price") + amount)
+
+
+# Keep total fee in sync when service selections change (through model updates)
+@receiver(post_save, sender=MedicalCardService)
+def update_total_fee_on_service_link_save(sender, instance: MedicalCardService, **kwargs):
+    instance.medical_card.update_total_fee()
+
+
+@receiver(post_delete, sender=MedicalCardService)
+def update_total_fee_on_service_link_delete(sender, instance: MedicalCardService, **kwargs):
+    instance.medical_card.update_total_fee()
 
 
 # =========================
@@ -330,11 +426,17 @@ class Task(models.Model):
     nurse = models.ForeignKey(
         Nurse, on_delete=models.PROTECT, related_name="tasks"
     )
+    # Direct link for traceability; defaults to schedule.medical_card at creation time
+    medical_card = models.ForeignKey(
+        MedicalCard, on_delete=models.PROTECT, related_name="nurse_tasks", null=True, blank=True
+    )
     description = models.TextField()
     day = models.DateField()
     due_time = models.TimeField()
     is_done = models.BooleanField(default=False)
     done_at = models.DateTimeField(blank=True, null=True)
+    # Per-task price; if not provided, may default from nurse.rate_per_task
+    price = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
 
     class Meta:
         verbose_name = "Task"
@@ -412,6 +514,14 @@ def set_done_at_on_completion(sender, instance: Task, **kwargs):
         # New task; nothing to compare
         if instance.is_done and not instance.done_at:
             instance.done_at = timezone.now()
+        # Ensure medical_card is set to the schedule's medical_card if missing
+        if instance.schedule and not instance.medical_card:
+            instance.medical_card = instance.schedule.medical_card
+        # Default price from nurse.rate_per_task if not provided
+        if (instance.price is None or instance.price == Decimal("0")) and getattr(instance.nurse, "rate_per_task", None):
+            instance.price = instance.nurse.rate_per_task
+        # Mark transition for post_save handler
+        instance._mark_done_transition = bool(instance.is_done)
         return
     try:
         prev = Task.objects.get(pk=instance.pk)
@@ -419,6 +529,8 @@ def set_done_at_on_completion(sender, instance: Task, **kwargs):
         prev = None
     if instance.is_done and (not prev or not prev.is_done) and not instance.done_at:
         instance.done_at = timezone.now()
+    # Mark transition for post_save handler
+    instance._mark_done_transition = bool((prev and not prev.is_done) and instance.is_done)
 
 
 @receiver(post_save, sender=Task)
@@ -429,3 +541,113 @@ def update_salary_on_task_save(sender, instance: Task, **kwargs):
 @receiver(post_delete, sender=Task)
 def update_salary_on_task_delete(sender, instance: Task, **kwargs):
     _recalculate_daily_salary(instance.nurse, instance.day)
+
+
+# =========================
+# Doctor Tasks & Incomes
+# =========================
+
+
+class DoctorIncome(models.Model):
+    """Tracks a doctor's monthly income accumulated from completed doctor tasks."""
+
+    doctor = models.OneToOneField(Doctor, on_delete=models.CASCADE, related_name="income")
+    monthly_total = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0"))
+    last_reset = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        verbose_name = "Doctor Income"
+        verbose_name_plural = "Doctor Incomes"
+
+    def __str__(self) -> str:  # pragma: no cover
+        return f"DoctorIncome {self.doctor_id}: {self.monthly_total}"
+
+
+class DoctorTask(models.Model):
+    """A doctor's task linked to a medical service and card.
+
+    Price is captured from the service at creation time. When marked done,
+    the price contributes 100% to the doctor's monthly income.
+    """
+
+    doctor = models.ForeignKey(Doctor, on_delete=models.PROTECT, related_name="tasks")
+    medical_card = models.ForeignKey(MedicalCard, on_delete=models.PROTECT, related_name="doctor_tasks")
+    service = models.ForeignKey(Service, on_delete=models.PROTECT, related_name="doctor_tasks")
+    is_done = models.BooleanField(default=False)
+    done_at = models.DateTimeField(blank=True, null=True)
+    price = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Doctor Task"
+        verbose_name_plural = "Doctor Tasks"
+        ordering = ("-created_at",)
+
+    def __str__(self) -> str:  # pragma: no cover
+        return f"DoctorTask #{self.pk} - Doctor {self.doctor_id}"
+
+
+# Signals for doctor task transitions and nurse income updates
+
+
+@receiver(pre_save, sender=DoctorTask)
+def set_doctor_task_defaults(sender, instance: "DoctorTask", **kwargs):
+    """Ensure price and done_at are set appropriately on creation/updates."""
+    if not instance.pk:
+        # Default price from service
+        if instance.service and (instance.price is None or instance.price == Decimal("0")):
+            instance.price = instance.service.price
+        if instance.is_done and not instance.done_at:
+            instance.done_at = timezone.now()
+        return
+    try:
+        prev = DoctorTask.objects.get(pk=instance.pk)
+    except DoctorTask.DoesNotExist:
+        prev = None
+    if instance.is_done and (not prev or not prev.is_done) and not instance.done_at:
+        instance.done_at = timezone.now()
+
+
+@receiver(post_save, sender=DoctorTask)
+def increment_doctor_income_on_done(sender, instance: "DoctorTask", created: bool, **kwargs):
+    """When a doctor task transitions to done, increment monthly income by price."""
+    transitioned = bool(getattr(instance, "_mark_done_transition", False) or (created and instance.is_done))
+    if not transitioned:
+        return
+    with transaction.atomic():
+        income, _ = DoctorIncome.objects.select_for_update().get_or_create(doctor=instance.doctor)
+        income.monthly_total = (income.monthly_total or Decimal("0")) + (instance.price or Decimal("0"))
+        income.save(update_fields=["monthly_total"])  # type: ignore[misc]
+
+
+# =========================
+# Nurse Incomes
+# =========================
+
+
+class NurseIncome(models.Model):
+    """Tracks nurse daily and monthly incomes based on completed tasks."""
+
+    nurse = models.OneToOneField(Nurse, on_delete=models.CASCADE, related_name="income")
+    daily_total = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0"))
+    monthly_total = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0"))
+    last_reset = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        verbose_name = "Nurse Income"
+        verbose_name_plural = "Nurse Incomes"
+
+    def __str__(self) -> str:  # pragma: no cover
+        return f"NurseIncome {self.nurse_id}: D={self.daily_total} M={self.monthly_total}"
+
+
+@receiver(post_save, sender=Task)
+def increment_nurse_income_on_task_done(sender, instance: Task, created: bool, **kwargs):
+    """When a nurse task transitions to done, increment NurseIncome.daily_total by price."""
+    transitioned = bool(getattr(instance, "_mark_done_transition", False) or (created and instance.is_done))
+    if not transitioned:
+        return
+    with transaction.atomic():
+        inc, _ = NurseIncome.objects.select_for_update().get_or_create(nurse=instance.nurse)
+        inc.daily_total = (inc.daily_total or Decimal("0")) + (instance.price or Decimal("0"))
+        inc.save(update_fields=["daily_total"])  # type: ignore[misc]

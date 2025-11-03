@@ -1,15 +1,18 @@
-"""ViewSets for user roles (Admin, Moderator, Doctor, Nurse, Client)."""
+"""ViewSets for user roles (Admin, Moderator, Doctor, Nurse, Client) and user creation API."""
 
-from rest_framework import permissions, viewsets
+from rest_framework import permissions, status, viewsets
+from rest_framework.response import Response
+from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema, extend_schema_view
 
-from .models import Admin, Moderator, Doctor, Nurse, Client
+from .models import Admin, Moderator, Doctor, Nurse, Client, RoleChoices
 from .serializers import (
     AdminSerializer,
     ModeratorSerializer,
     DoctorSerializer,
     NurseSerializer,
     ClientSerializer,
+    CreateUserSerializer,
 )
 
 
@@ -81,3 +84,65 @@ class ClientViewSet(viewsets.ModelViewSet):
     queryset = Client.objects.select_related("user", "created_by__user").all()
     serializer_class = ClientSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+
+class CreateUserView(APIView):
+    """Create a new user and trigger role-profile auto-creation via signals.
+
+    Access control:
+    - Admins (role="admin" or is_superuser): can create any role (admin/moderator/doctor/nurse/client).
+    - Moderators: can create clients only.
+    - Anonymous users: can create clients only (self-registration).
+    - Authenticated non-admin/non-moderator users (e.g., client/doctor/nurse): not allowed to create any user.
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    @extend_schema(
+        tags=["users"],
+        summary="Create new user",
+        request=CreateUserSerializer,
+        responses={201: CreateUserSerializer},
+        description=(
+            "Create a new user by providing first_name, last_name, phone_number, password, and role.\n"
+            "If caller is not staff, only role=client is allowed. Role-specific profiles are auto-created via signals."
+        ),
+    )
+    def post(self, request, *args, **kwargs):
+        serializer = CreateUserSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        requested_role = serializer.validated_data.get("role")
+
+        req_user = getattr(request, "user", None)
+        is_auth = bool(getattr(req_user, "is_authenticated", False))
+        is_super = bool(getattr(req_user, "is_superuser", False))
+        user_role = getattr(req_user, "role", None) if is_auth else None
+
+        # Determine allowed roles based on requester
+        if is_super or user_role == RoleChoices.ADMIN:
+            allowed_roles = {
+                RoleChoices.ADMIN,
+                RoleChoices.MODERATOR,
+                RoleChoices.DOCTOR,
+                RoleChoices.NURSE,
+                RoleChoices.CLIENT,
+            }
+        elif user_role == RoleChoices.MODERATOR:
+            allowed_roles = {RoleChoices.CLIENT}
+        elif not is_auth:
+            # Anonymous self-registration
+            allowed_roles = {RoleChoices.CLIENT}
+        else:
+            # Authenticated but not admin/moderator (client/doctor/nurse) -> none
+            allowed_roles = set()
+
+        if requested_role not in allowed_roles:
+            return Response(
+                {"detail": "You are not allowed to create the requested role."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        instance = serializer.save()
+        out = CreateUserSerializer(instance)
+        return Response(out.data, status=status.HTTP_201_CREATED)
