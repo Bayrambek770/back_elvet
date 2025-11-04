@@ -146,6 +146,7 @@ class MedicalCardSerializer(serializers.ModelSerializer):
         required=False,
     )
 
+    # Present services via the M2M, which we keep in sync with priced selections
     services = ServiceSerializer(many=True, read_only=True)
     # Selected services with chosen prices
     services_selected = serializers.SerializerMethodField(read_only=True)
@@ -212,13 +213,16 @@ class MedicalCardSerializer(serializers.ModelSerializer):
         services_priced = self.initial_data.get("services_priced") if isinstance(self.initial_data, dict) else None
         # Apply priced selections if provided; else fallback to plain set
         if services_priced:
-            self._apply_services_priced(card, services_priced)
+            selected_services = self._apply_services_priced(card, services_priced)
+            # Keep M2M membership in sync for read APIs
+            card.services.set(selected_services)
         elif services:
             # Back-compat: set selections with fixed price from service
             for svc in services:
                 MedicalCardService.objects.update_or_create(
                     medical_card=card, service=svc, defaults={"price": svc.price}
                 )
+            card.services.set(services)
         if medicines:
             card.medicines.set(medicines)
         # Stationary room: ensure availability, set pet linkage and dates
@@ -237,13 +241,17 @@ class MedicalCardSerializer(serializers.ModelSerializer):
             # Replace selections per request
             MedicalCardService.objects.filter(medical_card=card).delete()
             if services_priced:
-                self._apply_services_priced(card, services_priced)
+                selected_services = self._apply_services_priced(card, services_priced)
+                card.services.set(selected_services)
+            else:
+                card.services.clear()
         elif services is not None:
             MedicalCardService.objects.filter(medical_card=card).delete()
             for svc in services:
                 MedicalCardService.objects.update_or_create(
                     medical_card=card, service=svc, defaults={"price": svc.price}
                 )
+            card.services.set(services)
         if medicines is not None:
             card.medicines.set(medicines)
         # Release previous room if changed or cleared
@@ -338,6 +346,7 @@ class MedicalCardSerializer(serializers.ModelSerializer):
         selections: list of dicts {service_id, price}
         """
         from decimal import Decimal as D
+        selected_services = []
         for sel in selections:
             svc_id = sel.get("service_id")
             price = sel.get("price")
@@ -362,6 +371,8 @@ class MedicalCardSerializer(serializers.ModelSerializer):
                 service=svc,
                 defaults={"price": price},
             )
+            selected_services.append(svc)
+        return selected_services
 
 
 class PaymentSerializer(serializers.ModelSerializer):

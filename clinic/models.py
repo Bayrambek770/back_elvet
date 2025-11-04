@@ -134,8 +134,8 @@ class MedicalCard(models.Model):
     room_release_date = models.DateTimeField(blank=True, null=True)
 
     services = models.ManyToManyField(
-        Service, related_name="medical_cards", blank=True, through='MedicalCardService'
-    )  # Services rendered with optional variable price via through model
+        Service, related_name="medical_cards", blank=True
+    )  # Services rendered; variable prices stored in MedicalCardService
     medicines = models.ManyToManyField(
         Medicine, related_name="medical_cards", blank=True
     )  # Medicines used
@@ -176,10 +176,12 @@ class MedicalCard(models.Model):
 
     def update_total_fee(self) -> None:
         """Recalculate total fee from associated services and medicines."""
-        # Sum selected prices from through model
-        service_total = sum(
-            (ms.price for ms in self.service_links.all()), start=Decimal("0")
-        )
+        # Sum selected prices from MedicalCardService when available; otherwise fallback to M2M services' base prices
+        links = list(self.service_links.all())
+        if links:
+            service_total = sum((ms.price for ms in links), start=Decimal("0"))
+        else:
+            service_total = sum((s.price for s in self.services.all()), start=Decimal("0"))
         medicine_total = sum((m.price for m in self.medicines.all()), start=Decimal("0"))
         self.total_fee = service_total + medicine_total
         # Don't call save(update_fields=[...]) here to avoid recursion in signals.
