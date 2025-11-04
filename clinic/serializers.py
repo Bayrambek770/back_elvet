@@ -119,6 +119,16 @@ class StationaryRoomSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class ServicePriceSelectionSerializer(serializers.Serializer):
+    """Schema for selecting a service with a custom price on a medical card.
+
+    Helps OpenAPI (Swagger) display proper field structure instead of free-form dicts.
+    """
+
+    service_id = serializers.PrimaryKeyRelatedField(queryset=Service.objects.all())
+    price = serializers.DecimalField(max_digits=12, decimal_places=2)
+
+
 class MedicalCardSerializer(serializers.ModelSerializer):
     """Serializer for MedicalCard with nested relationships.
 
@@ -166,9 +176,8 @@ class MedicalCardSerializer(serializers.ModelSerializer):
         source="services", queryset=Service.objects.all(), many=True, write_only=True, required=False
     )
     # New format allowing custom price per service
-    services_priced = serializers.ListField(
-        child=serializers.DictField(), write_only=True, required=False, help_text="[{service_id, price}]"
-    )
+    services_priced = ServicePriceSelectionSerializer(many=True, write_only=True, required=False,
+        help_text="List of {service_id, price} pairs to set custom prices for selected services.")
     medicine_ids = serializers.PrimaryKeyRelatedField(
         source="medicines", queryset=Medicine.objects.all(), many=True, write_only=True, required=False
     )
@@ -189,7 +198,14 @@ class MedicalCardSerializer(serializers.ModelSerializer):
             "services", "services_selected", "service_ids", "services_priced",
             "medicines", "medicine_ids",
             # card details
-            "status", "diagnosis", "notes",
+            "status",
+            # vitals and clinical observations
+            "weight", "blood_pressure", "mucous_membrane", "heart_rate", "respiratory_rate",
+            "general_condition", "chest_condition", "body_temperature",
+            # clinical texts
+            "anamnesis", "diagnosis", "diet", "notes",
+            # revisit
+            "revisit_date",
             # timestamps and totals
             "created_at", "closed_at", "total_fee",
         )
