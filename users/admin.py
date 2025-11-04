@@ -32,30 +32,31 @@ class UserAdmin(admin.ModelAdmin):
 
 @admin.register(AdminProfile)
 class AdminProfileAdmin(admin.ModelAdmin):
-    list_display = ("user",)
+    list_display = ("id", "user")
 
 
 @admin.register(Moderator)
 class ModeratorAdmin(admin.ModelAdmin):
-    list_display = ("user", "work_start_date", "salary", "active", "created_by")
+    list_display = ("id", "user", "work_start_date", "salary", "active", "created_by")
     list_filter = ("active",)
 
 
 @admin.register(Doctor)
 class DoctorAdmin(admin.ModelAdmin):
-    list_display = ("user", "specialization", "work_start_date", "salary_per_case", "active", "created_by")
+    list_display = ("id", "user", "specialization", "work_start_date", "salary_per_case", "active", "created_by")
     list_filter = ("active", "specialization")
 
 
 @admin.register(Nurse)
 class NurseAdmin(admin.ModelAdmin):
-    list_display = ("user", "work_start_date", "salary_per_day", "total_salary", "active", "created_by")
+    list_display = ("id", "user", "work_start_date", "salary_per_day", "total_salary", "active", "created_by")
     list_filter = ("active",)
 
 
 @admin.register(Client)
 class ClientAdmin(admin.ModelAdmin):
     list_display = (
+        "id",
         "user",
         "extra_phone_number",
         "address",

@@ -95,9 +95,9 @@ class ServiceAdmin(admin.ModelAdmin):
 
 @admin.register(Pet)
 class PetAdmin(admin.ModelAdmin):
-    list_display = ("name", "breed", "client")
+    list_display = ("id", "name", "animal_type", "breed", "client")
     search_fields = ("name", "breed")
-    list_filter = ("gender",)
+    list_filter = ("gender", "animal_type")
 
 
 @admin.register(MedicalCard)

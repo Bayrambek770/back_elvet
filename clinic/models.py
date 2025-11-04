@@ -37,6 +37,16 @@ class Pet(models.Model):
     breed = models.CharField(max_length=255, blank=True, null=True)
     age = models.PositiveIntegerField(blank=True, null=True)
     gender = models.CharField(max_length=16, choices=GenderChoices.choices)
+    
+    class AnimalTypeChoices(models.TextChoices):
+        DOG = "dog", "Dog"
+        CAT = "cat", "Cat"
+        BIRD = "bird", "Bird"
+        REPTILE = "reptile", "Reptile"
+        RODENT = "rodent", "Rodent"
+        OTHER = "other", "Other"
+
+    animal_type = models.CharField(max_length=16, choices=AnimalTypeChoices.choices, default=AnimalTypeChoices.OTHER)
     notes = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

@@ -47,6 +47,7 @@ class PetSerializer(serializers.ModelSerializer):
             "breed",
             "age",
             "gender",
+            "animal_type",
             "notes",
             "created_at",
         )
